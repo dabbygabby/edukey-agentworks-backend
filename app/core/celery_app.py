@@ -20,5 +20,5 @@ celery_app = Celery(
 
 celery_app.conf.update(
     task_track_started=True,
-    include=["app.tasks.example_tasks"],
+    include=["app.tasks.example_tasks", "app.tasks.learning_plan_tasks", "app.tasks.learning_plan_tasks_v2"],
 )
