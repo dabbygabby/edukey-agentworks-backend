@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Redis service
+  redis:
+    image: redis:7-alpine
+    container_name: redis_job_queue
+    ports:
+      - "6379:6379"
+
+  # FastAPI API service
+  api:
+    build: .
+    container_name: fastapi_api
+    env_file:
+      - .env
+    ports:
+      - "8003:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - redis
+    volumes:
+      - ./app:/app/app # Mount local code for hot-reloading
+
+  # Celery Worker service
+  worker:
+    build: .
+    container_name: celery_worker
+    env_file:
+      - .env
+    command: celery -A app.core.celery_app worker --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - ./app:/app/app # Mount local code for hot-reloading
