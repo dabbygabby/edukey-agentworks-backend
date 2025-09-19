@@ -6,3 +6,6 @@ python-dotenv
 groq
 pydantic
 pydantic-settings
+matplotlib
+vercel-blob
+numpy
