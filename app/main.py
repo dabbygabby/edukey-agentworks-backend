@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from celery.result import AsyncResult
 
@@ -10,9 +11,21 @@ from app.tasks.learning_plan_tasks_v2 import (
     create_learning_path_v2,
     LearningPathTaskPayloadv2,
 )
+from app.tasks.question_generator import generate_question, QuestionGenerationPayload
 
 # Create FastAPI app
 app = FastAPI(title="FastAPI Job Queue with Groq", version="1.0")
+
+# --- Add CORS Middleware ---
+# This allows all origins, methods, and headers.
+# You might want to restrict this in a production environment.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 
 # --- Job Status Endpoint ---
@@ -69,6 +82,13 @@ create_learning_path_v2_router = create_task_router(
 app.include_router(
     create_learning_path_v2_router, prefix="/api", tags=["Create Learning Path V2"]
 )
+
+generate_question_router = create_task_router(
+    task=generate_question,
+    payload_model=QuestionGenerationPayload,
+    task_name="generate-question",
+)
+app.include_router(generate_question_router, prefix="/api", tags=["Generate Question"])
 
 
 @app.get("/", summary="Health Check")
