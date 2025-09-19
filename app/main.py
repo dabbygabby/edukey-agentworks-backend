@@ -13,6 +13,7 @@ from app.tasks.learning_plan_tasks_v2 import (
 )
 from app.tasks.question_generator import generate_question, QuestionGenerationPayload
 from app.tasks.generate_sketch import generate_sketch, SketchTaskPayload
+from app.tasks.sketch_prompt_generator import generate_sketch_prompt, SketchPromptGenerationPayload
 
 # Create FastAPI app
 app = FastAPI(title="FastAPI Job Queue with Groq", version="1.0")
@@ -98,6 +99,12 @@ generate_sketch_router = create_task_router(
 )
 app.include_router(generate_sketch_router, prefix="/api", tags=["Generate Sketch"])
 
+generate_sketch_prompt_router = create_task_router(
+    task=generate_sketch_prompt,
+    payload_model=SketchPromptGenerationPayload,
+    task_name="generate-sketch-prompt",
+)
+app.include_router(generate_sketch_prompt_router, prefix="/api", tags=["Generate Sketch Prompt"])
 
 
 @app.get("/", summary="Health Check")

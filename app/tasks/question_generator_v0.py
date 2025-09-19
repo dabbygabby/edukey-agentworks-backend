@@ -1,5 +1,3 @@
-# app/tasks/question_generator.py
-
 import os
 import json
 from groq import Groq
@@ -7,11 +5,6 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.celery_app import celery_app
 import httpx
 from typing import List, Literal, Optional
-
-# --- Import the other tasks for chaining ---
-from app.tasks.sketch_prompt_generator import generate_sketch_prompt
-from app.tasks.generate_sketch import generate_sketch
-
 
 # --- Subject ID Mapping ---
 # Maps the subject names identified by the AI to your specific MongoDB ObjectIDs.
@@ -74,10 +67,6 @@ class QuestionGenerationPayload(BaseModel):
     query: str = Field(
         ..., example="JEE advanced rotational mechanics rolling without slipping"
     )
-    generate_image: Optional[bool] = Field(
-        default=False,
-        description="If true, generate a sketch for the question.",
-    )
 
 
 # Pydantic models for validating the LLM's MCQ output
@@ -102,24 +91,26 @@ class ExtractedMetadata(BaseModel):
     tags: List[str]
 
 
-# --- Celery Task Definition (with Image Generation Logic) ---
+# --- Celery Task Definition ---
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=15)
 def generate_question(self, payload: dict):
     """
-    Generates a structured MCQ, optionally creates a diagram, and formats it
-    for the IQuestion Mongoose schema.
+    Generates a structured MCQ and formats it for the IQuestion Mongoose schema.
+
+    This task performs two main steps:
+    1.  Generates the core question content (text, options, explanation).
+    2.  Extracts metadata (subject, difficulty, tags) from the user query.
+    3.  Transforms the combined data into the target database format.
     """
+    # Initialize response_content to None to handle potential errors before assignment
     response_content = None
     try:
         # 1. Validate the input payload
         validated_payload = QuestionGenerationPayload.model_validate(payload)
         user_query = validated_payload.query
-        should_generate_image = validated_payload.generate_image
-        print(
-            f"✅ Received request for: '{user_query}' (Generate Image: {should_generate_image})"
-        )
+        print(f"✅ Received valid request to generate question for: '{user_query}'")
 
         # 2. Initialize the Groq client
         client = Groq(
@@ -150,7 +141,7 @@ def generate_question(self, payload: dict):
                 {"role": "system", "content": SYSTEM_PROMPT_EXTRACT_METADATA},
                 {"role": "user", "content": user_query},
             ],
-            model="openai/gpt-oss-120b",
+            model="openai/gpt-oss-120b",  # Can use a faster model if available
             temperature=0.1,
             response_format={"type": "json_object"},
         )
@@ -159,67 +150,35 @@ def generate_question(self, payload: dict):
         validated_metadata = ExtractedMetadata.model_validate(metadata_data)
         print(f"👍 Successfully extracted metadata: {validated_metadata.model_dump()}")
 
-        # --- Step C: Conditionally generate the sketch ---
-        image_url = None
-        if should_generate_image:
-            print("\n🖼️ Starting image generation pipeline...")
-            try:
-                # C.1 - Generate the sketch prompt
-                prompt_payload = {
-                    "question_text": validated_mcq.question,
-                    "explanation_text": validated_mcq.explanation,
-                }
-                # Calling task directly since this is a synchronous chain
-                prompt_result = generate_sketch_prompt(prompt_payload)
+        # --- Step C: Transform the data to match the IQuestion schema ---
+        print("🔄 Transforming data into the target schema...")
 
-                if prompt_result.get("status") == "completed":
-                    sketch_description = prompt_result.get("description")
-                    print(f"   -> Generated sketch prompt: '{sketch_description}'")
-
-                    # C.2 - Generate the sketch itself
-                    sketch_payload = {"description": sketch_description}
-                    sketch_result = generate_sketch(sketch_payload)
-
-                    if sketch_result.get("status") == "completed":
-                        image_url = sketch_result.get("url")
-                        print(
-                            f"   -> 🔗 Successfully generated sketch URL: {image_url}"
-                        )
-                    else:
-                        print(
-                            f"   -> ⚠️ Sketch generation failed: {sketch_result.get('error')}"
-                        )
-                else:
-                    print(
-                        f"   -> ⚠️ Sketch prompt generation failed: {prompt_result.get('error')}"
-                    )
-            except Exception as img_exc:
-                print(
-                    f"   -> ❌ An error occurred during the image pipeline: {img_exc}"
-                )
-                # We log the error but don't fail the entire task.
-
-        # --- Step D: Transform the data to match the IQuestion schema ---
-        print("\n🔄 Transforming data into the target schema...")
-
+        # Transform options from {"A": "text", ...} to [{text: "...", isCorrect: ...}]
         transformed_options = [
             {"text": text, "isCorrect": key == validated_mcq.correct_answer}
             for key, text in validated_mcq.options.model_dump().items()
         ]
 
+        # Map the subject name to its MongoDB ObjectID
         subject_id = SUBJECT_ID_MAP.get(validated_metadata.subject)
         if not subject_id:
-            print(f"⚠️ Warning: Could not map subject '{validated_metadata.subject}'.")
+            print(
+                f"⚠️ Warning: Could not map subject '{validated_metadata.subject}'. Defaulting to None."
+            )
 
+        # Assemble the final document for the database
+        # NOTE: The 'explanation' is not part of the IQuestion schema provided.
+        # We are returning it alongside the main document so it can be used elsewhere if needed.
         final_document = {
             "text": validated_mcq.question,
-            "imageUrl": image_url,  # Use the generated URL here
+            "imageUrl": None,  # Not generated in this process
             "options": transformed_options,
             "difficulty": validated_metadata.difficulty,
             "subject": subject_id,
             "tags": validated_metadata.tags,
         }
 
+        # The task returns a dict containing the formatted question and the explanation
         task_output = {
             "question_data": final_document,
             "explanation": validated_mcq.explanation,
@@ -229,7 +188,9 @@ def generate_question(self, payload: dict):
         return task_output
 
     except (ValidationError, json.JSONDecodeError) as e:
-        print(f"⚠️ Validation Error: LLM response was malformed. Error: {e}")
+        print(
+            f"⚠️ Validation Error: The LLM response was not in the expected format. Error: {e}"
+        )
         print(f"   Raw response was: {response_content}")
         raise self.retry(exc=e)
 
